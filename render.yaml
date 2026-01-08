@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: ai-tarot-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false  # Ustawisz ręcznie w dashboardzie Render
+    
+    # Plan (bezpłatny)
+    plan: free
+    
+    # Auto-deploy
+    autoDeploy: true
+    
+    # Health check
+    healthCheckPath: /health
+    initialDelaySec: 30
+    
+    # Resources
+    disk:
+      name: tmp
+      mountPath: /tmp
+      sizeGB: 1
