@@ -8,6 +8,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const APP_SECRET_KEY = process.env.APP_SECRET_KEY;
+
+if (!APP_SECRET_KEY) {
+  console.error("❌ Missing APP_SECRET_KEY");
+  process.exit(1);
+}
+
 /* ===== ROOT ENDPOINT ===== */
 app.get("/", (req, res) => {
   res.json({
