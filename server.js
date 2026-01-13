@@ -1,3 +1,18 @@
+const APP_SECRET_KEY = process.env.APP_KEY;
+
+app.post("/chat", async (req, res) => {
+  const appKey = req.headers["x-app-key"];
+
+  if (!appKey || appKey !== APP_SECRET_KEY) {
+    return res.status(403).json({
+      error: "Forbidden",
+      message: "Invalid application key"
+    });
+  }
+
+  // reszta kodu...
+});
+
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
