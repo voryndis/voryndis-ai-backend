@@ -1,18 +1,3 @@
-const APP_SECRET_KEY = process.env.APP_KEY;
-
-app.post("/chat", async (req, res) => {
-  const appKey = req.headers["x-app-key"];
-
-  if (!appKey || appKey !== APP_SECRET_KEY) {
-    return res.status(403).json({
-      error: "Forbidden",
-      message: "Invalid application key"
-    });
-  }
-
-  // reszta kodu...
-});
-
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
@@ -22,36 +7,30 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const APP_KEY = process.env.APP_KEY;
+const APP_SECRET_KEY = process.env.APP_KEY;
 
-/* ===== ROOT ===== */
+/* ===== TEST ROOT ===== */
 app.get("/", (req, res) => {
-  res.json({ status: "online" });
-});
-
-/* ===== HEALTH ===== */
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "healthy" });
+  res.json({ status: "AI backend online" });
 });
 
 /* ===== CHAT ===== */
 app.post("/chat", async (req, res) => {
 
-  // 🔐 APP KEY CHECK
   const appKey = req.headers["x-app-key"];
-  if (!appKey || appKey !== APP_KEY) {
+  if (!appKey || appKey !== APP_SECRET_KEY) {
     return res.status(403).json({
       error: "Forbidden",
       message: "Invalid application key"
     });
   }
 
-  try {
-    const { message } = req.body;
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Invalid message" });
-    }
+  const { message } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: "No message" });
+  }
 
+  try {
     const response = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -66,12 +45,9 @@ app.post("/chat", async (req, res) => {
             {
               role: "system",
               content:
-                "Jesteś mistycznym tarotowym doradcą. Odpowiadaj spokojnie, duchowo i empatycznie. Maks 3–4 zdania."
+                "Jesteś mistycznym doradcą tarotowym. Odpowiadaj spokojnie i duchowo. 3–4 zdania."
             },
-            {
-              role: "user",
-              content: message.substring(0, 500)
-            }
+            { role: "user", content: message }
           ],
           temperature: 0.8,
           max_tokens: 300
@@ -86,13 +62,12 @@ app.post("/chat", async (req, res) => {
     });
 
   } catch (err) {
-    res.status(500).json({
-      error: "Server error",
-      message: err.message
-    });
+    console.error(err);
+    res.status(500).json({ error: "AI error" });
   }
 });
 
-/* ===== START ===== */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+app.listen(PORT, () =>
+  console.log("🚀 AI backend running on port", PORT)
+);
