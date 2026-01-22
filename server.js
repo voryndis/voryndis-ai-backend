@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 
 const app = express();
 
-/* ===== MIDDLEWARE ===== */
+/* ================== MIDDLEWARE ================== */
 app.use(cors());
 app.use(express.json());
 
@@ -12,59 +12,53 @@ const APP_SECRET_KEY = process.env.APP_SECRET_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 if (!APP_SECRET_KEY || !OPENAI_API_KEY) {
-  console.error("❌ Missing environment variables");
+  console.error("❌ Missing ENV keys");
   process.exit(1);
 }
 
-/* ===== PAMIĘĆ SESJI (RAM) ===== */
-// 🔴 NIC NIE JEST ZAPISYWANE DO DB / PLIKÓW
-const conversationMemory = {};
+/* ================== SESSION RAM ================== */
+const sessions = new Map();
 
-/* ===== APP KEY VERIFY ===== */
-const verifyAppKey = (req, res, next) => {
+/* ================== APP KEY CHECK ================== */
+function verifyAppKey(req, res, next) {
   if (req.method === "GET") return next();
 
-  const clientKey = req.headers["x-app-key"];
-  if (clientKey !== APP_SECRET_KEY) {
-    return res.status(403).json({ reply: "Unauthorized energy access." });
+  const key = req.headers["x-app-key"];
+  if (key !== APP_SECRET_KEY) {
+    return res.status(403).json({ error: "Invalid app key" });
   }
   next();
-};
+}
 
-app.post("/chat", verifyAppKey);
+app.use("/chat", verifyAppKey);
 
-/* ===== ROOT ===== */
+/* ================== ROUTES ================== */
 app.get("/", (_, res) => {
-  res.json({ status: "online", secured: true });
+  res.json({ status: "ok" });
 });
 
-/* ===== HEALTH ===== */
-app.get("/health", (_, res) => {
-  res.json({ status: "healthy", uptime: process.uptime() });
-});
-
-/* ===== CHAT ===== */
 app.post("/chat", async (req, res) => {
   try {
     const { sessionId, messages, endSession } = req.body;
 
-    if (!sessionId) {
-      return res.status(400).json({ reply: "Missing sessionId." });
+    /* ====== HARD VALIDATION ====== */
+    if (!sessionId || typeof sessionId !== "string") {
+      return res.status(400).json({ error: "Missing sessionId" });
     }
 
-    /* ===== ZAKOŃCZENIE SESJI ===== */
+    /* ====== END SESSION ====== */
     if (endSession === true) {
-      delete conversationMemory[sessionId];
+      sessions.delete(sessionId);
       return res.json({ success: true, ended: true });
     }
 
     if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ reply: "No messages provided." });
+      return res.status(400).json({ error: "Missing messages[]" });
     }
 
-    /* ===== INICJALIZACJA SESJI ===== */
-    if (!conversationMemory[sessionId]) {
-      conversationMemory[sessionId] = [
+    /* ====== INIT SESSION ====== */
+    if (!sessions.has(sessionId)) {
+      sessions.set(sessionId, [
         {
           role: "system",
           content: `
@@ -127,24 +121,29 @@ Jeśli czujesz, że odpowiedź jest kompletna,
 zakończ ją spokojnie – bez pytania.
 `
         }
-      ];
+      ]);
     }
 
-    /* ===== DODAJ WIADOMOŚCI ===== */
-    conversationMemory[sessionId].push(...messages);
+    const history = sessions.get(sessionId);
 
-    /* ===== OPENAI ===== */
+    messages.forEach(m => {
+      if (m.role && m.content) {
+        history.push(m);
+      }
+    });
+
+    /* ====== OPENAI ====== */
     const response = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENAI_API_KEY}`
         },
         body: JSON.stringify({
           model: "gpt-4o-mini",
-          messages: conversationMemory[sessionId],
+          messages: history,
           temperature: 0.8,
           max_tokens: 300
         })
@@ -152,37 +151,25 @@ zakończ ją spokojnie – bez pytania.
     );
 
     const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content;
 
-    if (!reply) {
-      return res.json({
-        reply: "⚠️ Energia odpowiedzi jest dziś zamglona."
-      });
+    if (!data.choices?.[0]?.message) {
+      throw new Error("Invalid OpenAI response");
     }
 
-    /* ===== ZAPIS ODPOWIEDZI DO RAM ===== */
-    conversationMemory[sessionId].push({
-      role: "assistant",
-      content: reply
-    });
+    const reply = data.choices[0].message.content;
+
+    history.push({ role: "assistant", content: reply });
 
     res.json({ reply });
 
   } catch (err) {
-    console.error(err);
-    res.json({
-      reply: "⚠️ Połączenie z wymiarem energii zostało zakłócone."
-    });
+    console.error("❌ CHAT ERROR:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ===== 404 ===== */
-app.use((_, res) => {
-  res.status(404).json({ error: "Not found" });
-});
-
-/* ===== START ===== */
+/* ================== START ================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🔮 Voryndis backend running on ${PORT}`);
+  console.log("🚀 Server running on", PORT);
 });
