@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 
 const app = express();
 
-/* ================== MIDDLEWARE ================== */
+/* ===== MIDDLEWARE ===== */
 app.use(cors());
 app.use(express.json());
 
@@ -12,57 +12,93 @@ const APP_SECRET_KEY = process.env.APP_SECRET_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 if (!APP_SECRET_KEY || !OPENAI_API_KEY) {
-  console.error("❌ Missing ENV keys");
+  console.error("❌ Missing APP_SECRET_KEY or OPENAI_API_KEY");
   process.exit(1);
 }
 
-/* ================== SESSION RAM ================== */
-const sessions = new Map();
+/* ===== PAMIĘĆ SESJI (w RAM) ===== */
+const sessionStorage = new Map(); // sessionId -> { messages: [], lastActive: timestamp }
 
-/* ================== APP KEY CHECK ================== */
-function verifyAppKey(req, res, next) {
+/* ===== WERYFIKACJA KLUCZA ===== */
+const verifyAppKey = (req, res, next) => {
   if (req.method === "GET") return next();
-
-  const key = req.headers["x-app-key"];
-  if (key !== APP_SECRET_KEY) {
-    return res.status(403).json({ error: "Invalid app key" });
+  
+  const clientKey = req.headers["x-app-key"];
+  if (!clientKey || clientKey !== APP_SECRET_KEY) {
+    return res.status(403).json({ 
+      error: "Unauthorized",
+      reply: "🔒 Dostęp wymaga prawidłowego klucza energii."
+    });
   }
   next();
-}
+};
 
-app.use("/chat", verifyAppKey);
+app.use(verifyAppKey);
 
-/* ================== ROUTES ================== */
-app.get("/", (_, res) => {
-  res.json({ status: "ok" });
+/* ===== ENDPOINTY ===== */
+app.get("/", (req, res) => {
+  res.json({
+    status: "online",
+    service: "Voryndis AI Backend",
+    activeSessions: sessionStorage.size,
+    timestamp: new Date().toISOString()
+  });
 });
 
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+/* ===== GŁÓWNY ENDPOINT CZATU ===== */
 app.post("/chat", async (req, res) => {
+  console.log("📨 Chat request received");
+  
   try {
-    const { sessionId, messages, endSession } = req.body;
-
-    /* ====== HARD VALIDATION ====== */
-    if (!sessionId || typeof sessionId !== "string") {
-      return res.status(400).json({ error: "Missing sessionId" });
-    }
-
-    /* ====== END SESSION ====== */
+    const { sessionId, message, endSession } = req.body;
+    
+    // ===== 1. ZAKOŃCZENIE SESJI =====
     if (endSession === true) {
-      sessions.delete(sessionId);
-      return res.json({ success: true, ended: true });
+      if (sessionId && sessionStorage.has(sessionId)) {
+        sessionStorage.delete(sessionId);
+        console.log(`🗑️ Session ended: ${sessionId}`);
+      }
+      return res.json({ 
+        success: true, 
+        message: "Sesja zakończona. Pamięć wyczyszczona." 
+      });
     }
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: "Missing messages[]" });
+    
+    // ===== 2. WALIDACJA =====
+    if (!sessionId) {
+      console.error("❌ Missing sessionId");
+      return res.status(400).json({ 
+        reply: "Brak identyfikatora sesji. Rozpocznij nową rozmowę." 
+      });
     }
-
-    /* ====== INIT SESSION ====== */
-    if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, [
-        {
-          role: "system",
-          content: `
-Jesteś Voryndis — mistyczną wróżką i duchową przewodniczką.
+    
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      console.error("❌ Invalid message");
+      return res.status(400).json({ 
+        reply: "Nie otrzymałam wiadomości do interpretacji." 
+      });
+    }
+    
+    const userMessage = message.trim();
+    console.log(`💬 Session ${sessionId}: "${userMessage.substring(0, 50)}..."`);
+    
+    // ===== 3. INICJALIZACJA LUB POBRANIE SESJI =====
+    if (!sessionStorage.has(sessionId)) {
+      console.log(`🆕 New session created: ${sessionId}`);
+      sessionStorage.set(sessionId, {
+        messages: [
+          {
+            role: "system",
+            content: `Jesteś Voryndis — mistyczną wróżką i duchową przewodniczką.
 
 Jesteś Voryndis – wróżką, która prowadzi jedną ciągłą sesję.
 Pamiętaj całą rozmowę do momentu jej zakończenia.
@@ -118,58 +154,112 @@ Pytanie powinno:
 – nie brzmieć technicznie ani sprzedażowo.
 
 Jeśli czujesz, że odpowiedź jest kompletna,
-zakończ ją spokojnie – bez pytania.
-`
-        }
-      ]);
+zakończ ją spokojnie – bez pytania.`
+          }
+        ],
+        lastActive: Date.now()
+      });
     }
-
-    const history = sessions.get(sessionId);
-
-    messages.forEach(m => {
-      if (m.role && m.content) {
-        history.push(m);
-      }
+    
+    const session = sessionStorage.get(sessionId);
+    session.lastActive = Date.now();
+    
+    // ===== 4. DODAJ WIADOMOŚĆ UŻYTKOWNIKA =====
+    session.messages.push({
+      role: "user",
+      content: userMessage
     });
-
-    /* ====== OPENAI ====== */
-    const response = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${OPENAI_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: history,
-          temperature: 0.8,
-          max_tokens: 300
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    if (!data.choices?.[0]?.message) {
-      throw new Error("Invalid OpenAI response");
+    
+    // ===== 5. OGRANICZ HISTORIĘ (max 15 wiadomości) =====
+    if (session.messages.length > 15) {
+      // Zachowaj system prompt i ostatnie 14 wiadomości
+      const systemPrompt = session.messages[0];
+      const recentMessages = session.messages.slice(-14);
+      session.messages = [systemPrompt, ...recentMessages];
     }
-
-    const reply = data.choices[0].message.content;
-
-    history.push({ role: "assistant", content: reply });
-
-    res.json({ reply });
-
-  } catch (err) {
-    console.error("❌ CHAT ERROR:", err);
-    res.status(500).json({ error: "Server error" });
+    
+    console.log(`📊 Session ${sessionId}: ${session.messages.length} messages in history`);
+    
+    // ===== 6. WYWOŁAJ OPENAI =====
+    console.log("🤖 Calling OpenAI API...");
+    const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: session.messages,
+        temperature: 0.8,
+        max_tokens: 300,
+        stream: false
+      }),
+      timeout: 15000
+    });
+    
+    if (!openaiResponse.ok) {
+      const errorData = await openaiResponse.json();
+      console.error("❌ OpenAI API error:", errorData);
+      
+      // Usuń ostatnią wiadomość użytkownika (bo się nie udało)
+      session.messages.pop();
+      
+      return res.status(500).json({ 
+        reply: "Przepraszam, połączenie z wymiarami energii jest dziś niestabilne. Spróbuj ponownie za chwilę." 
+      });
+    }
+    
+    const openaiData = await openaiResponse.json();
+    const aiReply = openaiData.choices?.[0]?.message?.content || "Nie otrzymałam odpowiedzi od energii.";
+    
+    console.log(`✅ OpenAI response (${aiReply.length} chars)`);
+    
+    // ===== 7. DODAJ ODPOWIEDŹ DO HISTORII =====
+    session.messages.push({
+      role: "assistant",
+      content: aiReply
+    });
+    
+    // ===== 8. ODPOWIEDŹ DO KLIENTA =====
+    res.json({ 
+      reply: aiReply,
+      sessionSize: session.messages.length
+    });
+    
+  } catch (error) {
+    console.error("💥 Server error:", error);
+    res.status(500).json({ 
+      reply: "Wystąpił nieoczekiwany błąd w polu energii. Odśwież przestrzeń i spróbuj ponownie." 
+    });
   }
 });
 
-/* ================== START ================== */
+/* ===== AUTOMATYCZNE CZYSZCZENIE STARYCH SESJI ===== */
+setInterval(() => {
+  const now = Date.now();
+  const THIRTY_MINUTES = 30 * 60 * 1000;
+  let cleanedCount = 0;
+  
+  for (const [sessionId, session] of sessionStorage.entries()) {
+    if (now - session.lastActive > THIRTY_MINUTES) {
+      sessionStorage.delete(sessionId);
+      cleanedCount++;
+      console.log(`🧹 Cleaned old session: ${sessionId} (inactive for 30+ minutes)`);
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    console.log(`🧹 Total cleaned: ${cleanedCount} old sessions`);
+  }
+}, 10 * 60 * 1000); // Sprawdzaj co 10 minut
+
+/* ===== START SERWERA ===== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 Server running on", PORT);
+  console.log(`🔮 Voryndis AI Backend started on port ${PORT}`);
+  console.log(`🔐 App Key: ${APP_SECRET_KEY ? '✓ Configured' : '✗ MISSING'}`);
+  console.log(`🤖 OpenAI Key: ${OPENAI_API_KEY ? '✓ Configured' : '✗ MISSING'}`);
+  console.log(`⏰ Auto-clean: Every 10 minutes (30min inactivity)`);
+  console.log(`📅 ${new Date().toISOString()}`);
 });
